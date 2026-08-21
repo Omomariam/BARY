@@ -1,0 +1,125 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap');
+
+:root {
+  font-family: 'Inter', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: dark;
+  color: #e2e8f0;
+  background-color: #030712;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Theme colors */
+  --bg-dark: #030712;
+  --bg-card: rgba(17, 24, 39, 0.7);
+  --border-glow: rgba(99, 102, 241, 0.15);
+  --border-focus: rgba(99, 102, 241, 0.5);
+  --primary: #6366f1;
+  --primary-glow: rgba(99, 102, 241, 0.4);
+  --secondary: #a855f7;
+  --secondary-glow: rgba(168, 85, 247, 0.4);
+  --accent: #14b8a6;
+  --accent-glow: rgba(20, 184, 166, 0.4);
+  --danger: #ef4444;
+  --success: #10b981;
+  --warning: #f59e0b;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #030712 60%);
+  background-attachment: fixed;
+  overflow-x: hidden;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Outfit', sans-serif;
+  margin: 0;
+  color: #ffffff;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #030712;
+}
+::-webkit-scrollbar-thumb {
+  background: #1f2937;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+/* Glassmorphism Class */
+.glass-panel {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-panel:hover {
+  border-color: var(--border-glow);
+  box-shadow: 0 12px 40px 0 rgba(99, 102, 241, 0.1);
+}
+
+/* Glowing text and effects */
+.glow-text-primary {
+  text-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
+}
+.glow-text-secondary {
+  text-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+}
+.glow-text-accent {
+  text-shadow: 0 0 10px rgba(20, 184, 166, 0.5);
+}
+.glow-text-success {
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(99, 102, 241, 0.5);
+  }
+}
+
+.pulse-primary {
+  animation: pulse-glow 3s infinite;
+}
+
+@keyframes ticker {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-100%);
+  }
+}
+
+/* Base button reset */
+button {
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  transition: all 0.2s ease-in-out;
+}
+
+input {
+  font-family: 'Inter', sans-serif;
+}
