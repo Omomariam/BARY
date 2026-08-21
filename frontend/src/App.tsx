@@ -538,10 +538,15 @@ export default function App() {
           )}
 
           {isConnected && account ? (
-            <button className="connect-btn disconnect-btn" onClick={disconnectWallet} title="Click to Disconnect">
-              <Wallet size={18} />
-              {`${account.substring(0, 6)}...${account.substring(38)}`}
-            </button>
+            <div className="wallet-connected-container" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <div className="connect-btn" style={{ cursor: "default" }}>
+                <Wallet size={18} />
+                {`${account.substring(0, 6)}...${account.substring(38)}`}
+              </div>
+              <button className="disconnect-btn" onClick={disconnectWallet} title="Disconnect Wallet">
+                Disconnect
+              </button>
+            </div>
           ) : (
             <button className="connect-btn" onClick={connectWallet} disabled={loading}>
               <Wallet size={18} />
