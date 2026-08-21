@@ -276,6 +276,19 @@ export default function App() {
     }
   };
 
+  // Disconnect Wallet
+  const disconnectWallet = () => {
+    setAccount(null);
+    setIsConnected(false);
+    signerRef.current = null;
+    providerRef.current = null;
+    setUsdtBalance("0.00");
+    setShareBalance("0.00");
+    setUsdtAllowance("0.00");
+    setAccruedYield("0.000000");
+    setTxHistory([]);
+  };
+
   // Faucet request on-chain
   const claimFaucet = async () => {
     try {
@@ -524,12 +537,17 @@ export default function App() {
             </div>
           )}
 
-          <button className="connect-btn" onClick={connectWallet} disabled={loading}>
-            <Wallet size={18} />
-            {isConnected && account 
-              ? `${account.substring(0, 6)}...${account.substring(38)}` 
-              : "Connect Wallet"}
-          </button>
+          {isConnected && account ? (
+            <button className="connect-btn disconnect-btn" onClick={disconnectWallet} title="Click to Disconnect">
+              <Wallet size={18} />
+              {`${account.substring(0, 6)}...${account.substring(38)}`}
+            </button>
+          ) : (
+            <button className="connect-btn" onClick={connectWallet} disabled={loading}>
+              <Wallet size={18} />
+              {loading ? "Connecting..." : "Connect Wallet"}
+            </button>
+          )}
 
           {currentPage === "landing" && (
             <button className="app-launch-btn" onClick={() => setCurrentPage("dashboard")}>
