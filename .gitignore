@@ -7,7 +7,7 @@ yarn-error.log*
 
 # Dependency directories
 node_modules/
-
+generate_txs.js
 # Hardhat compiler outputs
 artifacts/
 cache/

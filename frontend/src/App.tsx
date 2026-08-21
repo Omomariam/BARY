@@ -6,7 +6,6 @@ import {
   Wallet, 
   Plus, 
   Minus, 
-  RefreshCw, 
   AlertCircle, 
   Percent, 
   Activity, 
@@ -30,12 +29,6 @@ import {
 } from "./contracts";
 import "./App.css";
 
-interface LogMessage {
-  text: string;
-  type: "info" | "scan" | "success" | "warn" | "agent";
-  time: string;
-}
-
 interface Transaction {
   type: "deposit" | "withdraw" | "rebalance" | "faucet";
   amount: string;
@@ -53,22 +46,22 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [isDemoMode, setIsDemoMode] = useState(true);
+  const [contractOwner, setContractOwner] = useState<string | null>(null);
 
   // Contract instances (stored in refs to avoid re-renders)
   const providerRef = useRef<ethers.BrowserProvider | null>(null);
   const signerRef = useRef<ethers.JsonRpcSigner | null>(null);
 
   // Balances
-  const [usdtBalance, setUsdtBalance] = useState("1000.00"); // Start with mock USDT
+  const [usdtBalance, setUsdtBalance] = useState("0.00");
   const [shareBalance, setShareBalance] = useState("0.00");
   const [usdtAllowance, setUsdtAllowance] = useState("0.00");
   const [accruedYield, setAccruedYield] = useState("0.000000");
 
   // Fund Metrics
-  const [tvl, setTvl] = useState("12,450.00"); // Initial mock TVL
+  const [tvl, setTvl] = useState("0.00");
   const [exchangeRate, setExchangeRate] = useState("1.00");
-  const [fundApr, setFundApr] = useState("9.49");
+  const [fundApr, setFundApr] = useState("0.00");
 
   // Assets weights & aprs
   const [assets, setAssets] = useState([
@@ -77,10 +70,8 @@ export default function App() {
     { name: "Real Estate Debt (RWA)", weight: 30, apr: 8.1, color: "#14b8a6" }
   ]);
 
-  // AI Agent Settings & Terminal
+  // Strategy Risk Profile Selector
   const [selectedRisk, setSelectedRisk] = useState<"conservative" | "balanced" | "aggressive">("balanced");
-  const [terminalLogs, setTerminalLogs] = useState<LogMessage[]>([]);
-  const [isScanning, setIsScanning] = useState(false);
   const [pendingRebalance, setPendingRebalance] = useState<number[] | null>(null);
 
   // Forms
@@ -91,55 +82,146 @@ export default function App() {
   const [calcAmount, setCalcAmount] = useState("5000");
   const [calcRisk, setCalcRisk] = useState<"conservative" | "balanced" | "aggressive">("balanced");
 
-  // Transaction history state
-  const [txHistory, setTxHistory] = useState<Transaction[]>([
-    { type: "faucet", amount: "1000", asset: "mUSDT", time: "10m ago", hash: "0x5c72...ea91" },
-  ]);
+  // Live transaction history state from event logs
+  const [txHistory, setTxHistory] = useState<Transaction[]>([]);
 
-  const terminalEndRef = useRef<HTMLDivElement>(null);
-
-  // Helper to add terminal logs
-  const addLog = (text: string, type: LogMessage["type"] = "info") => {
-    const time = new Date().toLocaleTimeString();
-    setTerminalLogs(prev => [...prev, { text, type, time }]);
+  // Bohr Gas Overrides for Legacy Transactions
+  const gasOverride = {
+    type: 0,
+    gasLimit: 3000000,
+    gasPrice: ethers.parseUnits("20", "gwei")
   };
 
-  // Scroll to bottom of terminal
-  useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [terminalLogs]);
+  // 1. Fetch Global Metrics on Mount & Periodically via Read-Only RPC Provider
+  const loadGlobalMetrics = async () => {
+    try {
+      const provider = new ethers.JsonRpcProvider("https://rpc.bohr.life");
+      const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, provider);
+      const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, provider);
 
-  // Initial load
+      // Read decimals
+      const usdtDecimals = await usdtContract.decimals();
+
+      // Read metrics
+      const tvlRaw = await fundContract.totalDepositedUSDT();
+      const rateRaw = await fundContract.getExchangeRate();
+      const aprRaw = await fundContract.getAggregateApr();
+      const ownerAddress = await fundContract.owner();
+
+      const tvlFormatted = ethers.formatUnits(tvlRaw, usdtDecimals);
+      const rateFormatted = ethers.formatUnits(rateRaw, 18);
+      const aprFormatted = (Number(aprRaw) / 100).toFixed(2);
+
+      setTvl(parseFloat(tvlFormatted).toLocaleString("en-US", { minimumFractionDigits: 2 }));
+      setExchangeRate(rateFormatted);
+      setFundApr(aprFormatted);
+      setContractOwner(ownerAddress);
+
+      // Read assets allocations
+      const newAssets = [...assets];
+      for (let i = 0; i < 3; i++) {
+        const assetInfo = await fundContract.getAsset(i);
+        newAssets[i] = {
+          name: assetInfo[0],
+          weight: Number(assetInfo[1]),
+          apr: Number(assetInfo[2]) / 100,
+          color: assets[i].color
+        };
+      }
+      setAssets(newAssets);
+    } catch (err) {
+      console.error("Failed to load global on-chain metrics:", err);
+    }
+  };
+
+  // 2. Fetch User Balances and allowances when MetaMask is connected
+  const loadUserBalances = async (userAddress: string, provider: ethers.BrowserProvider) => {
+    try {
+      const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, provider);
+      const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, provider);
+
+      const usdtDecimals = await usdtContract.decimals();
+      const usdtBalRaw = await usdtContract.balanceOf(userAddress);
+      const shareBalRaw = await fundContract.balanceOf(userAddress);
+      const allowanceRaw = await usdtContract.allowance(userAddress, DEPLOYED_ADDRESSES.AIBasketFund);
+      const pendingYieldRaw = await fundContract.getPendingYield();
+
+      const usdtBalFormatted = ethers.formatUnits(usdtBalRaw, usdtDecimals);
+      const shareBalFormatted = ethers.formatEther(shareBalRaw);
+      const allowanceFormatted = ethers.formatUnits(allowanceRaw, usdtDecimals);
+      const pendingYieldFormatted = ethers.formatUnits(pendingYieldRaw, usdtDecimals);
+
+      setUsdtBalance(parseFloat(usdtBalFormatted).toFixed(2));
+      setShareBalance(parseFloat(shareBalFormatted).toFixed(2));
+      setUsdtAllowance(allowanceFormatted);
+      setAccruedYield(parseFloat(pendingYieldFormatted).toFixed(6));
+
+      // Load transactions from Event logs
+      await fetchTxHistory(userAddress, provider);
+    } catch (err) {
+      console.error("Failed to load user balance data:", err);
+    }
+  };
+
+  // 3. Query Deposited and Redeemed Event Logs from the blockchain
+  const fetchTxHistory = async (userAddress: string, provider: ethers.BrowserProvider) => {
+    try {
+      const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, provider);
+      
+      const depositFilter = fundContract.filters.Deposited(userAddress);
+      const depositEvents = (await fundContract.queryFilter(depositFilter, -100000)) as any[]; // query last 100,000 blocks
+
+      const redeemFilter = fundContract.filters.Redeemed(userAddress);
+      const redeemEvents = (await fundContract.queryFilter(redeemFilter, -100000)) as any[];
+
+      const history: Transaction[] = [];
+
+      for (const ev of depositEvents) {
+        const amount = ethers.formatUnits(ev.args?.[1] || 0, 6);
+        history.push({
+          type: "deposit",
+          amount: amount,
+          asset: "USDT",
+          time: `Block #${ev.blockNumber}`,
+          hash: ev.transactionHash.substring(0, 6) + "..." + ev.transactionHash.substring(38)
+        });
+      }
+
+      for (const ev of redeemEvents) {
+        const amount = ethers.formatEther(ev.args?.[1] || 0);
+        history.push({
+          type: "withdraw",
+          amount: amount,
+          asset: "BARY",
+          time: `Block #${ev.blockNumber}`,
+          hash: ev.transactionHash.substring(0, 6) + "..." + ev.transactionHash.substring(38)
+        });
+      }
+
+      // Sort by block number descending
+      history.sort((a, b) => {
+        const blockA = parseInt(a.time.replace("Block #", ""));
+        const blockB = parseInt(b.time.replace("Block #", ""));
+        return blockB - blockA;
+      });
+
+      setTxHistory(history);
+    } catch (err) {
+      console.error("Failed to fetch events:", err);
+    }
+  };
+
+  // Global load & refresh loop
   useEffect(() => {
-    addLog("Bohr AI-RWA Yield Fund Terminal v1.0.0", "info");
-    addLog("Status: Running in Sandbox Demo Mode.", "warn");
-    addLog("Connect MetaMask wallet to link with Bohr Testnet.", "info");
-    
-    // Setup simulated live yield accrual
+    loadGlobalMetrics();
     const interval = setInterval(() => {
-      setAccruedYield(prev => {
-        const val = parseFloat(prev);
-        // Simulate a small tick up based on balance and APR
-        const userBal = parseFloat(shareBalance);
-        if (userBal > 0) {
-          const currentAprDecimal = parseFloat(fundApr) / 100;
-          // Accrual speeded up for visual feedback
-          const increment = (userBal * currentAprDecimal * 0.05) / (365 * 24 * 3600);
-          return (val + increment).toFixed(6);
-        }
-        return "0.000000";
-      });
-
-      // Slowly increment TVL to simulate other stakers in the RWA Fund
-      setTvl(prev => {
-        const val = parseFloat(prev.replace(/,/g, ""));
-        const increment = Math.random() * 0.05;
-        return (val + increment).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      });
-    }, 1000);
-
+      loadGlobalMetrics();
+      if (isConnected && account && providerRef.current) {
+        loadUserBalances(account, providerRef.current);
+      }
+    }, 4000);
     return () => clearInterval(interval);
-  }, [shareBalance, fundApr]);
+  }, [isConnected, account]);
 
   // Connect Wallet logic
   const connectWallet = async () => {
@@ -151,144 +233,51 @@ export default function App() {
         throw new Error("No crypto wallet found. Please install MetaMask.");
       }
 
-      // Request account access
       const accounts = await ethereum.request({ method: "eth_requestAccounts" });
       const currentAccount = accounts[0];
       setAccount(currentAccount);
       setIsConnected(true);
-      setIsDemoMode(false);
       
       const provider = new ethers.BrowserProvider(ethereum);
       providerRef.current = provider;
       const signer = await provider.getSigner();
       signerRef.current = signer;
 
-      addLog(`Wallet connected: ${currentAccount.substring(0, 6)}...${currentAccount.substring(38)}`, "success");
-
       // Verify and switch network if necessary
       const network = await provider.getNetwork();
       const targetChainId = BigInt(BOHR_TESTNET_PARAMS.chainId);
       
       if (network.chainId !== targetChainId) {
-        addLog(`Incorrect network detected. Attempting to switch to Bohr Testnet...`, "warn");
         try {
           await ethereum.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: BOHR_TESTNET_PARAMS.chainId }],
           });
-          addLog("Switched to Bohr Testnet successfully.", "success");
         } catch (switchError: any) {
-          // If network is not added, add it
           if (switchError.code === 4902) {
-            addLog("Bohr Testnet not found in wallet. Adding Bohr Testnet...", "info");
             await ethereum.request({
               method: "wallet_addEthereumChain",
               params: [BOHR_TESTNET_PARAMS],
             });
-            addLog("Bohr Testnet added and selected.", "success");
           } else {
             throw switchError;
           }
         }
       }
 
-      // Read on-chain data
-      await loadOnChainData(currentAccount, provider);
+      await loadUserBalances(currentAccount, provider);
 
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message || "Failed to connect wallet.");
-      addLog(`Connection failed: ${err.message || err}`, "warn");
-      setIsDemoMode(true);
+      setIsConnected(false);
     } finally {
       setLoading(false);
     }
   };
 
-  // Read data from contract
-  const loadOnChainData = async (userAddress: string, provider: ethers.BrowserProvider) => {
-    try {
-      // Connect to contracts
-      const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, provider);
-      const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, provider);
-
-      // Read decimals
-      const usdtDecimals = await usdtContract.decimals();
-
-      // Read balances
-      const usdtBalRaw = await usdtContract.balanceOf(userAddress);
-      const shareBalRaw = await fundContract.balanceOf(userAddress);
-      const allowanceRaw = await usdtContract.allowance(userAddress, DEPLOYED_ADDRESSES.AIBasketFund);
-
-      const usdtBalFormatted = ethers.formatUnits(usdtBalRaw, usdtDecimals);
-      const shareBalFormatted = ethers.formatEther(shareBalRaw);
-      const allowanceFormatted = ethers.formatUnits(allowanceRaw, usdtDecimals);
-
-      setUsdtBalance(parseFloat(usdtBalFormatted).toFixed(2));
-      setShareBalance(parseFloat(shareBalFormatted).toFixed(2));
-      setUsdtAllowance(allowanceFormatted);
-
-      // Read fund config
-      const tvlRaw = await fundContract.totalDepositedUSDT();
-      const rateRaw = await fundContract.getExchangeRate();
-      const aprRaw = await fundContract.getAggregateApr();
-      const pendingYieldRaw = await fundContract.getPendingYield();
-
-      const tvlFormatted = ethers.formatUnits(tvlRaw, usdtDecimals);
-      const rateFormatted = ethers.formatUnits(rateRaw, 18); // rate is scaled by 1e18
-      const aprFormatted = (Number(aprRaw) / 100).toFixed(2); // bps to %
-      const pendingYieldFormatted = ethers.formatUnits(pendingYieldRaw, usdtDecimals);
-
-      setTvl(parseFloat(tvlFormatted).toLocaleString("en-US", { minimumFractionDigits: 2 }));
-      setExchangeRate(rateFormatted);
-      setFundApr(aprFormatted);
-      setAccruedYield(parseFloat(pendingYieldFormatted).toFixed(6));
-
-      // Read asset weights
-      const newAssets = [...assets];
-      for (let i = 0; i < 3; i++) {
-        const assetInfo = await fundContract.getAsset(i);
-        newAssets[i] = {
-          name: assetInfo[0],
-          weight: Number(assetInfo[1]),
-          apr: Number(assetInfo[2]) / 100, // bps to %
-          color: assets[i].color
-        };
-      }
-      setAssets(newAssets);
-
-      addLog("On-chain data sync complete.", "success");
-
-    } catch (err) {
-      console.error("Failed to read on-chain data, using fallbacks:", err);
-      addLog("Failed to read contract data. The contract might not be deployed yet at this address. Falling back to Demo Mode.", "warn");
-      setIsDemoMode(true);
-    }
-  };
-
-  // Faucet request
+  // Faucet request on-chain
   const claimFaucet = async () => {
-    const randomHash = "0x" + Math.random().toString(16).substring(2, 10) + Math.random().toString(16).substring(2, 10);
-    if (isDemoMode) {
-      setLoading(true);
-      setTimeout(() => {
-        setUsdtBalance(prev => (parseFloat(prev) + 1000.0).toFixed(2));
-        addLog("Faucet transaction confirmed: +1000 mUSDT", "success");
-        setTxHistory(prev => [
-          {
-            type: "faucet",
-            amount: "1000",
-            asset: "mUSDT",
-            time: "Just now",
-            hash: randomHash.substring(0, 6) + "..." + randomHash.substring(34)
-          },
-          ...prev
-        ]);
-        setLoading(false);
-      }, 1000);
-      return;
-    }
-
     try {
       setLoading(true);
       setErrorMsg(null);
@@ -296,73 +285,25 @@ export default function App() {
       if (!signer) return;
 
       const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, signer);
-      addLog("Requesting 1000 mUSDT from on-chain faucet...", "info");
       
-      const tx = await usdtContract.faucet(account, ethers.parseUnits("1000", 6));
-      addLog("Faucet transaction submitted, waiting for confirmation...", "info");
+      const tx = await usdtContract.faucet(account, ethers.parseUnits("1000", 6), gasOverride);
       await tx.wait();
       
-      addLog("Faucet claim transaction confirmed!", "success");
-      setTxHistory(prev => [
-        {
-          type: "faucet",
-          amount: "1000",
-          asset: "mUSDT",
-          time: "Just now",
-          hash: tx.hash.substring(0, 6) + "..." + tx.hash.substring(38)
-        },
-        ...prev
-      ]);
-
       if (account && providerRef.current) {
-        await loadOnChainData(account, providerRef.current);
+        await loadUserBalances(account, providerRef.current);
       }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.reason || err.message || "Faucet claim failed");
-      addLog(`Faucet claim failed: ${err.reason || err.message}`, "warn");
     } finally {
       setLoading(false);
     }
   };
 
-  // Deposit USDT
+  // Deposit USDT on-chain
   const handleDeposit = async () => {
     if (!depositAmount || parseFloat(depositAmount) <= 0) return;
     const amt = parseFloat(depositAmount);
-    const randomHash = "0x" + Math.random().toString(16).substring(2, 10) + Math.random().toString(16).substring(2, 10);
-
-    if (isDemoMode) {
-      if (amt > parseFloat(usdtBalance)) {
-        setErrorMsg("Insufficient mUSDT balance");
-        return;
-      }
-      setLoading(true);
-      setTimeout(() => {
-        setUsdtBalance(prev => (parseFloat(prev) - amt).toFixed(2));
-        setShareBalance(prev => (parseFloat(prev) + amt).toFixed(2));
-        // Update mock TVL
-        setTvl(prev => {
-          const val = parseFloat(prev.replace(/,/g, ""));
-          return (val + amt).toLocaleString("en-US", { minimumFractionDigits: 2 });
-        });
-        addLog(`Deposit Confirmed: Deposited ${amt} mUSDT to mint ${amt} BARY shares.`, "success");
-        setTxHistory(prev => [
-          {
-            type: "deposit",
-            amount: amt.toString(),
-            asset: "USDT",
-            time: "Just now",
-            hash: randomHash.substring(0, 6) + "..." + randomHash.substring(34)
-          },
-          ...prev
-        ]);
-        setDepositAmount("");
-        setErrorMsg(null);
-        setLoading(false);
-      }, 1500);
-      return;
-    }
 
     try {
       setLoading(true);
@@ -373,86 +314,34 @@ export default function App() {
       const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, signer);
       const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, signer);
 
-      const amtRaw = ethers.parseUnits(depositAmount, 6); // USDT uses 6 decimals
+      const amtRaw = ethers.parseUnits(depositAmount, 6);
 
-      // 1. Approve if allowance is low
+      // Approve if allowance is low
       const allowance = parseFloat(usdtAllowance);
-      if (allowance < parseFloat(depositAmount)) {
-        addLog("Approving BARY contract to spend USDT...", "info");
-        const appTx = await usdtContract.approve(DEPLOYED_ADDRESSES.AIBasketFund, ethers.parseUnits("1000000", 6));
+      if (allowance < amt) {
+        const appTx = await usdtContract.approve(DEPLOYED_ADDRESSES.AIBasketFund, ethers.parseUnits("1000000", 6), gasOverride);
         await appTx.wait();
-        addLog("Approve successful.", "success");
       }
 
-      // 2. Deposit
-      addLog(`Depositing ${depositAmount} USDT into RWA Yield Fund...`, "info");
-      const tx = await fundContract.deposit(amtRaw);
-      addLog("Transaction submitted, waiting for confirmation...", "info");
+      const tx = await fundContract.deposit(amtRaw, gasOverride);
       await tx.wait();
 
-      addLog("Deposit successful! Shares minted.", "success");
-      setTxHistory(prev => [
-        {
-          type: "deposit",
-          amount: amt.toString(),
-          asset: "USDT",
-          time: "Just now",
-          hash: tx.hash.substring(0, 6) + "..." + tx.hash.substring(38)
-        },
-        ...prev
-      ]);
       setDepositAmount("");
       if (account && providerRef.current) {
-        await loadOnChainData(account, providerRef.current);
+        await loadUserBalances(account, providerRef.current);
+        await loadGlobalMetrics();
       }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.reason || err.message || "Deposit transaction failed");
-      addLog(`Deposit failed: ${err.reason || err.message}`, "warn");
     } finally {
       setLoading(false);
     }
   };
 
-  // Withdraw / Redeem Shares
+  // Withdraw / Redeem Shares on-chain
   const handleWithdraw = async () => {
     if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) return;
-    const amt = parseFloat(withdrawAmount);
-    const randomHash = "0x" + Math.random().toString(16).substring(2, 10) + Math.random().toString(16).substring(2, 10);
-
-    if (isDemoMode) {
-      if (amt > parseFloat(shareBalance)) {
-        setErrorMsg("Insufficient BARY share balance");
-        return;
-      }
-      setLoading(true);
-      setTimeout(() => {
-        setShareBalance(prev => (parseFloat(prev) - amt).toFixed(2));
-        setUsdtBalance(prev => (parseFloat(prev) + amt * parseFloat(exchangeRate)).toFixed(2));
-        // Reset yield
-        setAccruedYield("0.000000");
-        // Update mock TVL
-        setTvl(prev => {
-          const val = parseFloat(prev.replace(/,/g, ""));
-          return (val - amt).toLocaleString("en-US", { minimumFractionDigits: 2 });
-        });
-        addLog(`Redemption Confirmed: Redeemed ${amt} BARY shares for USDT.`, "success");
-        setTxHistory(prev => [
-          {
-            type: "withdraw",
-            amount: amt.toString(),
-            asset: "BARY",
-            time: "Just now",
-            hash: randomHash.substring(0, 6) + "..." + randomHash.substring(34)
-          },
-          ...prev
-        ]);
-        setWithdrawAmount("");
-        setErrorMsg(null);
-        setLoading(false);
-      }, 1500);
-      return;
-    }
 
     try {
       setLoading(true);
@@ -461,120 +350,44 @@ export default function App() {
       if (!signer) return;
 
       const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, signer);
-      const amtRaw = ethers.parseEther(withdrawAmount); // BARY is 18 decimals
+      const amtRaw = ethers.parseEther(withdrawAmount);
 
-      addLog(`Requesting redemption of ${withdrawAmount} BARY shares...`, "info");
-      const tx = await fundContract.redeem(amtRaw);
-      addLog("Redemption submitted, waiting for confirmation...", "info");
+      const tx = await fundContract.redeem(amtRaw, gasOverride);
       await tx.wait();
 
-      addLog("Redemption confirmed! USDT returned.", "success");
-      setTxHistory(prev => [
-        {
-          type: "withdraw",
-          amount: amt.toString(),
-          asset: "BARY",
-          time: "Just now",
-          hash: tx.hash.substring(0, 6) + "..." + tx.hash.substring(38)
-        },
-        ...prev
-      ]);
       setWithdrawAmount("");
       if (account && providerRef.current) {
-        await loadOnChainData(account, providerRef.current);
+        await loadUserBalances(account, providerRef.current);
+        await loadGlobalMetrics();
       }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.reason || err.message || "Withdrawal failed");
-      addLog(`Redemption failed: ${err.reason || err.message}`, "warn");
     } finally {
       setLoading(false);
     }
   };
 
-  // Trigger AI Scan and weight proposal
-  const triggerAIScan = () => {
-    if (isScanning) return;
-    setIsScanning(true);
-    addLog(`[AI AGENT] Scanning market variables and yield differentials...`, "scan");
-    
-    // Simulate multi-step analysis for a premium terminal feel
-    setTimeout(() => {
-      addLog(`[AI AGENT] Checking US Treasury 3-Month Bill rate: Current 5.25%`, "info");
-    }, 1000);
+  // Calculate targets when risk switches
+  useEffect(() => {
+    let targets = [40, 30, 30];
+    if (selectedRisk === "conservative") targets = [70, 15, 15];
+    if (selectedRisk === "balanced") targets = [40, 30, 30];
+    if (selectedRisk === "aggressive") targets = [10, 70, 20];
 
-    setTimeout(() => {
-      addLog(`[AI AGENT] Reading DePIN GPU Utilization: Global index at 94.2% (Very High Demand)`, "info");
-    }, 2000);
+    const currentWeights = assets.map(a => a.weight);
+    const diff = currentWeights.some((w, idx) => w !== targets[idx]);
+    if (diff) {
+      setPendingRebalance(targets);
+    } else {
+      setPendingRebalance(null);
+    }
+  }, [selectedRisk, assets]);
 
-    setTimeout(() => {
-      let targets: number[] = [40, 30, 30]; // Balanced default
-      let expectedApr = "9.49";
-
-      if (selectedRisk === "conservative") {
-        targets = [70, 15, 15];
-        expectedApr = "6.61";
-      } else if (selectedRisk === "balanced") {
-        targets = [40, 30, 30];
-        expectedApr = "9.49";
-      } else if (selectedRisk === "aggressive") {
-        targets = [10, 70, 20];
-        expectedApr = "15.09";
-      }
-
-      addLog(`[AI AGENT] Risk assessment Strategy: [${selectedRisk.toUpperCase()}]`, "agent");
-      addLog(`[AI AGENT] Optimal Weight Target calculated: T-Bills (${targets[0]}%), GPU DePIN (${targets[1]}%), Real Estate (${targets[2]}%)`, "agent");
-      addLog(`[AI AGENT] Expected Aggregate APR: ${expectedApr}%`, "agent");
-      
-      // Determine if rebalance is needed
-      const currentWeights = assets.map(a => a.weight);
-      const diff = currentWeights.some((w, idx) => w !== targets[idx]);
-
-      if (diff) {
-        setPendingRebalance(targets);
-        addLog(`[PROPOSAL] New portfolio layout ready. Prompting on-chain transaction execution...`, "warn");
-      } else {
-        addLog(`[AI AGENT] Portfolio is already aligned. No execution required.`, "success");
-      }
-      setIsScanning(false);
-    }, 3500);
-  };
-
-  // Execute AI rebalance transaction
+  // Execute Rebalance on-chain (Owner only)
   const executeRebalance = async () => {
     if (!pendingRebalance) return;
     const [w0, w1, w2] = pendingRebalance;
-    const randomHash = "0x" + Math.random().toString(16).substring(2, 10) + Math.random().toString(16).substring(2, 10);
-
-    if (isDemoMode) {
-      setLoading(true);
-      setTimeout(() => {
-        const newAssets = [...assets];
-        newAssets[0].weight = w0;
-        newAssets[1].weight = w1;
-        newAssets[2].weight = w2;
-        setAssets(newAssets);
-        
-        // Calculate new APR
-        const newApr = (w0 * 5.2 + w1 * 18.5 + w2 * 8.1) / 100;
-        setFundApr(newApr.toFixed(2));
-
-        addLog(`[TX CONFIRMED] On-chain weights updated: ${w0}/${w1}/${w2}. New Fund APR: ${newApr.toFixed(2)}%`, "success");
-        setTxHistory(prev => [
-          {
-            type: "rebalance",
-            amount: `${w0}/${w1}/${w2}`,
-            asset: "Portfolio",
-            time: "Just now",
-            hash: randomHash.substring(0, 6) + "..." + randomHash.substring(34)
-          },
-          ...prev
-        ]);
-        setPendingRebalance(null);
-        setLoading(false);
-      }, 1500);
-      return;
-    }
 
     try {
       setLoading(true);
@@ -583,42 +396,21 @@ export default function App() {
       if (!signer) return;
 
       const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, signer);
-      addLog(`Initiating on-chain rebalance transaction: weights [${w0}, ${w1}, ${w2}]`, "info");
-      
-      const tx = await fundContract.rebalance(w0, w1, w2);
-      addLog("Transaction submitted, awaiting block inclusion...", "info");
+      const tx = await fundContract.rebalance(w0, w1, w2, gasOverride);
       await tx.wait();
 
-      addLog("On-chain portfolio rebalance confirmed!", "success");
-      setTxHistory(prev => [
-        {
-          type: "rebalance",
-          amount: `${w0}/${w1}/${w2}`,
-          asset: "Portfolio",
-          time: "Just now",
-          hash: tx.hash.substring(0, 6) + "..." + tx.hash.substring(38)
-        },
-        ...prev
-      ]);
       setPendingRebalance(null);
+      await loadGlobalMetrics();
       if (account && providerRef.current) {
-        await loadOnChainData(account, providerRef.current);
+        await loadUserBalances(account, providerRef.current);
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMsg(err.reason || err.message || "Rebalance transaction failed");
-      addLog(`Rebalance failed: ${err.reason || err.message}. (Note: Only contract owner can execute rebalancing).`, "warn");
+      setErrorMsg(err.reason || err.message || "Rebalance transaction failed (Note: Only contract owner can execute rebalancing).");
     } finally {
       setLoading(false);
     }
   };
-
-  // Auto-scan when risk profile switches
-  useEffect(() => {
-    setPendingRebalance(null);
-    addLog(`Risk profile updated to: [${selectedRisk.toUpperCase()}]. Initiating AI scan recommendation...`, "info");
-    triggerAIScan();
-  }, [selectedRisk]);
 
   // APR Yield Calculator Helper
   const getCalcResults = () => {
@@ -643,9 +435,12 @@ export default function App() {
 
   const calc = getCalcResults();
 
+  // Check if current connected user is owner of the contract
+  const isOwner = account && contractOwner && account.toLowerCase() === contractOwner.toLowerCase();
+
   return (
     <div className="app-container">
-      {/* Header - Simple for Landing, Rich with Tabs for App */}
+      {/* Header */}
       <header className="app-header">
         <div className="logo-section" onClick={() => setCurrentPage("landing")} style={{ cursor: "pointer" }}>
           <Shield className="logo-icon" size={32} />
@@ -661,7 +456,7 @@ export default function App() {
               Portfolio
             </button>
             <button className={`nav-tab ${currentPage === "agent" ? "active" : ""}`} onClick={() => setCurrentPage("agent")}>
-              AI Agent Strategy
+              Fund Strategy
             </button>
             <button className={`nav-tab ${currentPage === "faucet" ? "active" : ""}`} onClick={() => setCurrentPage("faucet")}>
               Faucet & Docs
@@ -709,13 +504,13 @@ export default function App() {
           <section className="landing-hero">
             <div className="hero-badge">
               <Sparkles size={14} className="badge-icon" />
-              <span>AI-Driven On-Chain Real World Asset Management</span>
+              <span>Decentralized On-Chain Real World Asset Management</span>
             </div>
             <h2 className="hero-title">
               Maximize Stablecoin Yields via <span className="highlight-text">Autonomous RWA</span> Pools
             </h2>
             <p className="hero-subtitle">
-              BARY is a non-custodial decentralized yield basket that aggregates real-world asset collateral (US Treasury Bills, DePIN high-compute leasing, and Real Estate Debt) dynamically balanced on-chain using artificial intelligence agents.
+              BARY is a non-custodial decentralized yield basket that aggregates real-world asset collateral (US Treasury Bills, DePIN high-compute leasing, and Real Estate Debt) dynamically balanced on-chain on the Bohr network.
             </p>
             <div className="hero-ctas">
               <button className="cta-primary-btn" onClick={() => setCurrentPage("dashboard")}>
@@ -730,12 +525,12 @@ export default function App() {
           {/* Quick Metrics Row */}
           <section className="landing-metrics">
             <div className="glass-panel metric-box">
-              <span className="metric-num glow-text-primary">$12,450,210+</span>
-              <span className="metric-lbl">Total Value Simulated</span>
+              <span className="metric-num glow-text-primary">${tvl}</span>
+              <span className="metric-lbl">Total Value Locked</span>
             </div>
             <div className="glass-panel metric-box">
-              <span className="metric-num glow-text-secondary">Up to 15.09%</span>
-              <span className="metric-lbl">Dynamic Aggregate APR</span>
+              <span className="metric-num glow-text-secondary">{fundApr}%</span>
+              <span className="metric-lbl">Aggregate APR</span>
             </div>
             <div className="glass-panel metric-box">
               <span className="metric-num glow-text-accent">100% Fully</span>
@@ -761,7 +556,7 @@ export default function App() {
                 <h4>US Treasury Bills</h4>
                 <p>Backing the fund with low-risk short-term government debt obligations, yielding highly predictable returns.</p>
                 <div className="show-stats">
-                  <span>Allocation: <strong>10% - 70%</strong></span>
+                  <span>Current weight: <strong>{assets[0].weight}%</strong></span>
                   <span style={{ color: "#6366f1" }}>Base APR: <strong>5.2%</strong></span>
                 </div>
               </div>
@@ -774,7 +569,7 @@ export default function App() {
                 <h4>DePIN GPU Compute Farm</h4>
                 <p>Yield derived from real compute equipment leased dynamically to machine learning teams and render hubs.</p>
                 <div className="show-stats">
-                  <span>Allocation: <strong>15% - 70%</strong></span>
+                  <span>Current weight: <strong>{assets[1].weight}%</strong></span>
                   <span style={{ color: "#a855f7" }}>Base APR: <strong>18.5%</strong></span>
                 </div>
               </div>
@@ -785,9 +580,9 @@ export default function App() {
                   <span className="show-badge" style={{ background: "rgba(20, 184, 166, 0.15)", color: "#14b8a6" }}>Income Focus</span>
                 </div>
                 <h4>Fractionalized Real Estate</h4>
-                <p>Institutional property debt investments. Backed by solid mortgages, supplying cash flows monthly.</p>
+                <p>Fractionalized mortgage assets. Backed by solid real estate debt obligations, compiling yields monthly.</p>
                 <div className="show-stats">
-                  <span>Allocation: <strong>15% - 30%</strong></span>
+                  <span>Current weight: <strong>{assets[2].weight}%</strong></span>
                   <span style={{ color: "#14b8a6" }}>Base APR: <strong>8.1%</strong></span>
                 </div>
               </div>
@@ -797,7 +592,7 @@ export default function App() {
           {/* Interactive Yield Calculator */}
           <section className="landing-calc glass-panel">
             <div className="calc-content">
-              <h3>Estimate Your AI-RWA Returns</h3>
+              <h3>Estimate Your RWA Returns</h3>
               <p>Adjust the variables below to simulate expected yields with BARY's on-chain allocation modes.</p>
               
               <div className="calc-controls">
@@ -824,7 +619,7 @@ export default function App() {
                 </div>
 
                 <div className="input-group">
-                  <label className="input-label">AI Risk Strat Mode</label>
+                  <label className="input-label">Fund Strategy Mode</label>
                   <div className="calc-risk-selector">
                     <button 
                       className={`risk-btn ${calcRisk === "conservative" ? "active" : ""}`} 
@@ -888,18 +683,18 @@ export default function App() {
               </div>
               <div className="step-card">
                 <div className="step-num">2</div>
-                <h5>AI Monitoring</h5>
-                <p>BARY AI agents constantly track interest rate differentials, GPU usage, and housing yield indicators.</p>
+                <h5>On-chain Weights Allocation</h5>
+                <p>The fund aggregates USDT and allocates weights to US Treasury Bills, GPU Farm compute leases, and Property debt.</p>
               </div>
               <div className="step-card">
                 <div className="step-num">3</div>
-                <h5>Autonomous Rebalance</h5>
-                <p>The system periodically triggers rebalance events to shift on-chain capital allocation into high yield pools.</p>
+                <h5>Strategic Rebalancing</h5>
+                <p>Owner rebalances weights periodically based on market yield indicators, adjusting allocations directly on-chain.</p>
               </div>
               <div className="step-card">
                 <div className="step-num">4</div>
-                <h5>Compound Yield</h5>
-                <p>Simulated yield accrues every second in your dashboard. Claim back your principal + interests anytime.</p>
+                <h5>Claim Earnings</h5>
+                <p>Compounded yield accrues on-chain. Withdraw your USDT collateral + earned yield at any time.</p>
               </div>
             </div>
             <button className="cta-primary-btn" style={{ margin: "40px auto 0 auto" }} onClick={() => setCurrentPage("dashboard")}>
@@ -951,153 +746,163 @@ export default function App() {
             </div>
           </section>
 
-          {/* Main Grid */}
-          <div className="dashboard-grid">
-            {/* Left Column - Composition Chart */}
-            <div className="glass-panel dashboard-card">
-              <h2 className="card-title">
-                <Layers size={20} className="glow-text-primary" />
-                Fund RWA Allocation
-              </h2>
-              
-              <div className="composition-container">
-                <div className="chart-wrapper">
-                  <div className="visual-chart">
-                    <svg width="150" height="150" viewBox="0 0 42 42">
-                      <circle className="svg-donut-hole" cx="21" cy="21" r="15.915"></circle>
-                      <circle className="svg-donut-ring" cx="21" cy="21" r="15.915" strokeWidth="3"></circle>
-                      
-                      {/* Drawing overlapping segments */}
-                      {(() => {
-                        let accumulatedOffset = 0;
-                        return assets.map((asset, index) => {
-                          const strokeDash = `${asset.weight} ${100 - asset.weight}`;
-                          const strokeOffset = 100 - accumulatedOffset;
-                          accumulatedOffset += asset.weight;
-                          return (
-                            <circle
-                              key={index}
-                              className="svg-donut-segment"
-                              cx="21"
-                              cy="21"
-                              r="15.915"
-                              stroke={asset.color}
-                              strokeWidth="3.5"
-                              strokeDasharray={strokeDash}
-                              strokeDashoffset={strokeOffset}
-                            ></circle>
-                          );
-                        });
-                      })()}
-                    </svg>
-                    <div className="chart-center-label">
-                      <span className="chart-center-value">{fundApr}%</span>
-                      <span className="chart-center-text">Est. APR</span>
+          {!isConnected ? (
+            <div className="glass-panel connect-wallet-prompt">
+              <Wallet size={48} className="prompt-icon" />
+              <h3>Connect Your Wallet</h3>
+              <p>Please connect your MetaMask wallet on Bohr Testnet to mint shares, deposit USDT collateral, and view balances.</p>
+              <button className="cta-primary-btn" onClick={connectWallet} disabled={loading}>
+                {loading ? "Connecting..." : "Connect Wallet"}
+              </button>
+            </div>
+          ) : (
+            <div className="dashboard-grid">
+              {/* Left Column - Composition Chart */}
+              <div className="glass-panel dashboard-card">
+                <h2 className="card-title">
+                  <Layers size={20} className="glow-text-primary" />
+                  Fund RWA Allocation
+                </h2>
+                
+                <div className="composition-container">
+                  <div className="chart-wrapper">
+                    <div className="visual-chart">
+                      <svg width="150" height="150" viewBox="0 0 42 42">
+                        <circle className="svg-donut-hole" cx="21" cy="21" r="15.915"></circle>
+                        <circle className="svg-donut-ring" cx="21" cy="21" r="15.915" strokeWidth="3"></circle>
+                        
+                        {/* Drawing overlapping segments */}
+                        {(() => {
+                          let accumulatedOffset = 0;
+                          return assets.map((asset, index) => {
+                            const strokeDash = `${asset.weight} ${100 - asset.weight}`;
+                            const strokeOffset = 100 - accumulatedOffset;
+                            accumulatedOffset += asset.weight;
+                            return (
+                              <circle
+                                key={index}
+                                className="svg-donut-segment"
+                                cx="21"
+                                cy="21"
+                                r="15.915"
+                                stroke={asset.color}
+                                strokeWidth="3.5"
+                                strokeDasharray={strokeDash}
+                                strokeDashoffset={strokeOffset}
+                              ></circle>
+                            );
+                          });
+                        })()}
+                      </svg>
+                      <div className="chart-center-label">
+                        <span className="chart-center-value">{fundApr}%</span>
+                        <span className="chart-center-text">Est. APR</span>
+                      </div>
+                    </div>
+
+                    <div className="asset-details-list">
+                      {assets.map((asset, index) => (
+                        <div className="asset-item" key={index}>
+                          <div className="asset-meta">
+                            <span className="asset-name-wrapper">
+                              <span className="asset-color-dot" style={{ backgroundColor: asset.color }}></span>
+                              {asset.name}
+                            </span>
+                            <div className="asset-values">
+                              <span>Allocation: <strong>{asset.weight}%</strong></span>
+                              <span className="asset-apr">APR: {asset.apr.toFixed(1)}%</span>
+                            </div>
+                          </div>
+                          <div className="asset-progress-bar-bg">
+                            <div 
+                              className="asset-progress-bar-fill" 
+                              style={{ width: `${asset.weight}%`, backgroundColor: asset.color }}
+                            ></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column - Swap Forms */}
+              <div className="vault-actions-hub">
+                {/* Deposit Card */}
+                <div className="glass-panel action-card" style={{ marginBottom: "20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+                    <h2 className="card-title" style={{ border: "none", marginBottom: 0, paddingBottom: 0 }}>
+                      <Plus size={20} className="glow-text-success" />
+                      Deposit USDT
+                    </h2>
+                    <button className="faucet-btn" onClick={claimFaucet} disabled={loading}>
+                      mUSDT Faucet
+                    </button>
+                  </div>
+                  
+                  <div className="input-group">
+                    <div className="input-label">
+                      <span>Amount to Deposit</span>
+                      <span>Balance: {usdtBalance} mUSDT</span>
+                    </div>
+                    <div className="input-wrapper">
+                      <input 
+                        type="number" 
+                        className="input-field" 
+                        placeholder="0.00" 
+                        value={depositAmount}
+                        onChange={e => setDepositAmount(e.target.value)}
+                        disabled={loading}
+                      />
+                      <span className="input-suffix">USDT</span>
                     </div>
                   </div>
 
-                  <div className="asset-details-list">
-                    {assets.map((asset, index) => (
-                      <div className="asset-item" key={index}>
-                        <div className="asset-meta">
-                          <span className="asset-name-wrapper">
-                            <span className="asset-color-dot" style={{ backgroundColor: asset.color }}></span>
-                            {asset.name}
-                          </span>
-                          <div className="asset-values">
-                            <span>Allocation: <strong>{asset.weight}%</strong></span>
-                            <span className="asset-apr">APR: {asset.apr.toFixed(1)}%</span>
-                          </div>
-                        </div>
-                        <div className="asset-progress-bar-bg">
-                          <div 
-                            className="asset-progress-bar-fill" 
-                            style={{ width: `${asset.weight}%`, backgroundColor: asset.color }}
-                          ></div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Right Column - Swap Forms */}
-            <div className="vault-actions-hub">
-              {/* Deposit Card */}
-              <div className="glass-panel action-card" style={{ marginBottom: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
-                  <h2 className="card-title" style={{ border: "none", marginBottom: 0, paddingBottom: 0 }}>
-                    <Plus size={20} className="glow-text-success" />
-                    Deposit collateral
-                  </h2>
-                  <button className="faucet-btn" onClick={claimFaucet} disabled={loading}>
-                    mUSDT Faucet
+                  <button 
+                    className="action-btn deposit-btn" 
+                    onClick={handleDeposit} 
+                    disabled={loading || !depositAmount || parseFloat(depositAmount) <= 0}
+                  >
+                    {loading ? "Confirming..." : "Deposit & Mint Share"}
                   </button>
                 </div>
-                
-                <div className="input-group">
-                  <div className="input-label">
-                    <span>Amount to Deposit</span>
-                    <span>Balance: {usdtBalance} mUSDT</span>
+
+                {/* Withdrawal Card */}
+                <div className="glass-panel action-card">
+                  <h2 className="card-title">
+                    <Minus size={20} className="glow-text-danger" />
+                    Redeem Shares
+                  </h2>
+
+                  <div className="input-group">
+                    <div className="input-label">
+                      <span>Amount of Shares</span>
+                      <span>Available: {shareBalance} BARY</span>
+                    </div>
+                    <div className="input-wrapper">
+                      <input 
+                        type="number" 
+                        className="input-field" 
+                        placeholder="0.00" 
+                        value={withdrawAmount}
+                        onChange={e => setWithdrawAmount(e.target.value)}
+                        disabled={loading}
+                      />
+                      <span className="input-suffix">BARY</span>
+                    </div>
                   </div>
-                  <div className="input-wrapper">
-                    <input 
-                      type="number" 
-                      className="input-field" 
-                      placeholder="0.00" 
-                      value={depositAmount}
-                      onChange={e => setDepositAmount(e.target.value)}
-                      disabled={loading}
-                    />
-                    <span className="input-suffix">USDT</span>
-                  </div>
+
+                  <button 
+                    className="action-btn withdraw-btn" 
+                    onClick={handleWithdraw} 
+                    disabled={loading || !withdrawAmount || parseFloat(withdrawAmount) <= 0}
+                  >
+                    {loading ? "Confirming..." : "Redeem BARY Shares"}
+                  </button>
                 </div>
-
-                <button 
-                  className="action-btn deposit-btn" 
-                  onClick={handleDeposit} 
-                  disabled={loading || !depositAmount || parseFloat(depositAmount) <= 0}
-                >
-                  {loading ? "Confirming..." : "Deposit & Mint Share"}
-                </button>
-              </div>
-
-              {/* Withdrawal Card */}
-              <div className="glass-panel action-card">
-                <h2 className="card-title">
-                  <Minus size={20} className="glow-text-danger" />
-                  Redeem Shares
-                </h2>
-
-                <div className="input-group">
-                  <div className="input-label">
-                    <span>Amount of Shares</span>
-                    <span>Available: {shareBalance} BARY</span>
-                  </div>
-                  <div className="input-wrapper">
-                    <input 
-                      type="number" 
-                      className="input-field" 
-                      placeholder="0.00" 
-                      value={withdrawAmount}
-                      onChange={e => setWithdrawAmount(e.target.value)}
-                      disabled={loading}
-                    />
-                    <span className="input-suffix">BARY</span>
-                  </div>
-                </div>
-
-                <button 
-                  className="action-btn withdraw-btn" 
-                  onClick={handleWithdraw} 
-                  disabled={loading || !withdrawAmount || parseFloat(withdrawAmount) <= 0}
-                >
-                  {loading ? "Confirming..." : "Redeem BARY Shares"}
-                </button>
               </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -1145,167 +950,187 @@ export default function App() {
             </div>
           </section>
 
-          {/* Performance Chart & Yield Growth Projection */}
-          <div className="dashboard-grid">
-            <div className="glass-panel dashboard-card">
-              <h2 className="card-title">
-                <LineChart size={20} className="glow-text-accent" />
-                Yield Performance Tracker
-              </h2>
-              
-              <div className="chart-container" style={{ padding: "10px 0" }}>
-                {/* SVG Mock Area Graph for yields */}
-                <div style={{ position: "relative", width: "100%", height: "200px" }}>
-                  <svg viewBox="0 0 500 180" width="100%" height="180" style={{ overflow: "visible" }}>
-                    <defs>
-                      <linearGradient id="gradient-area" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#14b8a6" stopOpacity="0.4" />
-                        <stop offset="100%" stopColor="#14b8a6" stopOpacity="0.0" />
-                      </linearGradient>
-                    </defs>
-                    {/* Grid lines */}
-                    <line x1="50" y1="10" x2="480" y2="10" stroke="rgba(255,255,255,0.05)" />
-                    <line x1="50" y1="50" x2="480" y2="50" stroke="rgba(255,255,255,0.05)" />
-                    <line x1="50" y1="90" x2="480" y2="90" stroke="rgba(255,255,255,0.05)" />
-                    <line x1="50" y1="130" x2="480" y2="130" stroke="rgba(255,255,255,0.05)" />
-                    <line x1="50" y1="150" x2="480" y2="150" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
-                    
-                    {/* Graph Line */}
-                    <path
-                      d="M 50 150 Q 120 135 180 110 T 310 80 T 420 50 T 480 35 L 480 150 Z"
-                      fill="url(#gradient-area)"
-                    />
-                    <path
-                      d="M 50 150 Q 120 135 180 110 T 310 80 T 420 50 T 480 35"
-                      fill="none"
-                      stroke="#14b8a6"
-                      strokeWidth="3.5"
-                    />
-
-                    {/* Nodes */}
-                    <circle cx="180" cy="110" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
-                    <circle cx="310" cy="80" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
-                    <circle cx="420" cy="50" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
-                    <circle cx="480" cy="35" r="5.5" fill="#10b981" stroke="#030712" strokeWidth="2" />
-                    
-                    {/* Text labels */}
-                    <text x="45" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 17</text>
-                    <text x="180" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 18</text>
-                    <text x="310" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 19</text>
-                    <text x="420" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 20</text>
-                    <text x="480" y="170" fill="#10b981" fontSize="9" fontWeight="bold" textAnchor="middle">Today</text>
-                    
-                    <text x="35" y="152" fill="#64748b" fontSize="9" textAnchor="end">$0.00</text>
-                    <text x="35" y="94" fill="#64748b" fontSize="9" textAnchor="end">$500.00</text>
-                    <text x="35" y="38" fill="#64748b" fontSize="9" textAnchor="end">$1,000.00</text>
-                  </svg>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginTop: "15px", padding: "0 10px", fontSize: "0.85rem", color: "#94a3b8" }}>
-                  <span>* Simulated performance tracks compounded yield growth of $10k base capital in Balanced strategy.</span>
-                </div>
-              </div>
+          {!isConnected ? (
+            <div className="glass-panel connect-wallet-prompt">
+              <Wallet size={48} className="prompt-icon" />
+              <h3>Connect Your Wallet</h3>
+              <p>Please connect your MetaMask wallet on Bohr Testnet to query on-chain transactions and projected earnings.</p>
+              <button className="cta-primary-btn" onClick={connectWallet} disabled={loading}>
+                Connect Wallet
+              </button>
             </div>
+          ) : (
+            <div>
+              {/* Performance Chart & Yield Growth Projection */}
+              <div className="dashboard-grid">
+                <div className="glass-panel dashboard-card">
+                  <h2 className="card-title">
+                    <LineChart size={20} className="glow-text-accent" />
+                    Yield Performance Tracker
+                  </h2>
+                  
+                  <div className="chart-container" style={{ padding: "10px 0" }}>
+                    <div style={{ position: "relative", width: "100%", height: "200px" }}>
+                      <svg viewBox="0 0 500 180" width="100%" height="180" style={{ overflow: "visible" }}>
+                        <defs>
+                          <linearGradient id="gradient-area" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#14b8a6" stopOpacity="0.4" />
+                            <stop offset="100%" stopColor="#14b8a6" stopOpacity="0.0" />
+                          </linearGradient>
+                        </defs>
+                        <line x1="50" y1="10" x2="480" y2="10" stroke="rgba(255,255,255,0.05)" />
+                        <line x1="50" y1="50" x2="480" y2="50" stroke="rgba(255,255,255,0.05)" />
+                        <line x1="50" y1="90" x2="480" y2="90" stroke="rgba(255,255,255,0.05)" />
+                        <line x1="50" y1="130" x2="480" y2="130" stroke="rgba(255,255,255,0.05)" />
+                        <line x1="50" y1="150" x2="480" y2="150" stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+                        
+                        <path
+                          d="M 50 150 Q 120 135 180 110 T 310 80 T 420 50 T 480 35 L 480 150 Z"
+                          fill="url(#gradient-area)"
+                        />
+                        <path
+                          d="M 50 150 Q 120 135 180 110 T 310 80 T 420 50 T 480 35"
+                          fill="none"
+                          stroke="#14b8a6"
+                          strokeWidth="3.5"
+                        />
 
-            {/* Projections Card */}
-            <div className="glass-panel dashboard-card">
-              <h2 className="card-title">
-                <TrendingUp size={20} className="glow-text-success" />
-                Yield Projections
-              </h2>
-              
-              <div className="yield-projection-panel">
-                <div className="projection-row">
-                  <div className="proj-item">
-                    <span className="proj-lbl">1-Month Projected</span>
-                    <span className="proj-val" style={{ color: "#ffffff" }}>
-                      +${((parseFloat(shareBalance) * parseFloat(exchangeRate) * parseFloat(fundApr)) / 100 / 12).toFixed(2)} USDT
-                    </span>
-                  </div>
-                  <div className="proj-item">
-                    <span className="proj-lbl">1-Year Projected</span>
-                    <span className="proj-val glow-text-success">
-                      +${((parseFloat(shareBalance) * parseFloat(exchangeRate) * parseFloat(fundApr)) / 100).toFixed(2)} USDT
-                    </span>
+                        <circle cx="180" cy="110" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
+                        <circle cx="310" cy="80" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
+                        <circle cx="420" cy="50" r="5" fill="#14b8a6" stroke="#030712" strokeWidth="2" />
+                        <circle cx="480" cy="35" r="5.5" fill="#10b981" stroke="#030712" strokeWidth="2" />
+                        
+                        <text x="45" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 17</text>
+                        <text x="180" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 18</text>
+                        <text x="310" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 19</text>
+                        <text x="420" y="170" fill="#64748b" fontSize="9" textAnchor="middle">Aug 20</text>
+                        <text x="480" y="170" fill="#10b981" fontSize="9" fontWeight="bold" textAnchor="middle">Today</text>
+                        
+                        <text x="35" y="152" fill="#64748b" fontSize="9" textAnchor="end">$0.00</text>
+                        <text x="35" y="94" fill="#64748b" fontSize="9" textAnchor="end">$500.00</text>
+                        <text x="35" y="38" fill="#64748b" fontSize="9" textAnchor="end">$1,000.00</text>
+                      </svg>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: "15px", padding: "0 10px", fontSize: "0.85rem", color: "#94a3b8" }}>
+                      <span>* Simulated performance tracks compounded yield growth of $10k base capital in Balanced strategy.</span>
+                    </div>
                   </div>
                 </div>
 
-                <div className="projection-details" style={{ marginTop: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
-                  <h5>Asset Allocations Breakdown</h5>
-                  {assets.map((asset, i) => {
-                    const allocatedAmount = parseFloat(shareBalance) * parseFloat(exchangeRate) * (asset.weight / 100);
-                    return (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85rem", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
-                        <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: asset.color }}></span>
-                          {asset.name}
+                {/* Projections Card */}
+                <div className="glass-panel dashboard-card">
+                  <h2 className="card-title">
+                    <TrendingUp size={20} className="glow-text-success" />
+                    Yield Projections
+                  </h2>
+                  
+                  <div className="yield-projection-panel">
+                    <div className="projection-row">
+                      <div className="proj-item">
+                        <span className="proj-lbl">1-Month Projected</span>
+                        <span className="proj-val" style={{ color: "#ffffff" }}>
+                          +${((parseFloat(shareBalance) * parseFloat(exchangeRate) * parseFloat(fundApr)) / 100 / 12).toFixed(2)} USDT
                         </span>
-                        <span>${allocatedAmount.toFixed(2)} USDT ({asset.weight}%)</span>
                       </div>
-                    );
-                  })}
+                      <div className="proj-item">
+                        <span className="proj-lbl">1-Year Projected</span>
+                        <span className="proj-val glow-text-success">
+                          +${((parseFloat(shareBalance) * parseFloat(exchangeRate) * parseFloat(fundApr)) / 100).toFixed(2)} USDT
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="projection-details" style={{ marginTop: "24px", display: "flex", flexDirection: "column", gap: "12px" }}>
+                      <h5>Asset Allocations Breakdown</h5>
+                      {assets.map((asset, i) => {
+                        const allocatedAmount = parseFloat(shareBalance) * parseFloat(exchangeRate) * (asset.weight / 100);
+                        return (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85rem", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
+                            <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: asset.color }}></span>
+                              {asset.name}
+                            </span>
+                            <span>${allocatedAmount.toFixed(2)} USDT ({asset.weight}%)</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Transaction History Section */}
+              <div className="glass-panel dashboard-card" style={{ marginTop: "24px" }}>
+                <h2 className="card-title">
+                  <Clock size={20} className="glow-text-primary" />
+                  On-chain Vault Activity Logs
+                </h2>
+                <div className="table-responsive">
+                  {txHistory.length === 0 ? (
+                    <p style={{ textAlign: "center", color: "#94a3b8", padding: "20px 0" }}>No matching vault interactions found for this wallet on-chain.</p>
+                  ) : (
+                    <table className="history-table">
+                      <thead>
+                        <tr>
+                          <th>Action</th>
+                          <th>Asset</th>
+                          <th>Value (USDT / Shares)</th>
+                          <th>Confirm Block</th>
+                          <th>TX Hash</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {txHistory.map((tx, idx) => (
+                          <tr key={idx}>
+                            <td>
+                              <span className={`tx-type-tag ${tx.type}`}>
+                                {tx.type.toUpperCase()}
+                              </span>
+                            </td>
+                            <td style={{ fontWeight: 600 }}>{tx.asset}</td>
+                            <td>{tx.amount}</td>
+                            <td style={{ color: "#94a3b8" }}>{tx.time}</td>
+                            <td>
+                              <a 
+                                href={`https://scan.bohr.life/tx/0x${tx.hash.replace("...", "")}`} 
+                                target="_blank" 
+                                rel="noreferrer" 
+                                style={{ fontFamily: "monospace", color: "#6366f1", textDecoration: "none" }}
+                              >
+                                {tx.hash}
+                              </a>
+                            </td>
+                            <td>
+                              <span className="tx-status-success">✓ Confirmed</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               </div>
             </div>
-          </div>
-
-          {/* Transaction History Section */}
-          <div className="glass-panel dashboard-card" style={{ marginTop: "24px" }}>
-            <h2 className="card-title">
-              <Clock size={20} className="glow-text-primary" />
-              Activity History
-            </h2>
-            <div className="table-responsive">
-              <table className="history-table">
-                <thead>
-                  <tr>
-                    <th>Action</th>
-                    <th>Asset</th>
-                    <th>Value / Weight</th>
-                    <th>Time</th>
-                    <th>TX Hash</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {txHistory.map((tx, idx) => (
-                    <tr key={idx}>
-                      <td>
-                        <span className={`tx-type-tag ${tx.type}`}>
-                          {tx.type.toUpperCase()}
-                        </span>
-                      </td>
-                      <td style={{ fontWeight: 600 }}>{tx.asset}</td>
-                      <td>{tx.amount}</td>
-                      <td style={{ color: "#94a3b8" }}>{tx.time}</td>
-                      <td style={{ fontFamily: "monospace", color: "#6366f1" }}>{tx.hash}</td>
-                      <td>
-                        <span className="tx-status-success">✓ Confirmed</span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
-      {/* 4. AI AGENT CENTER PAGE */}
+      {/* 4. FUND STRATEGY PAGE */}
       {currentPage === "agent" && (
         <div className="agent-page animate-fade-in">
-          {/* Intro settings row */}
           <div className="dashboard-grid">
-            {/* AI Controls */}
+            {/* Strategy Controls */}
             <div className="glass-panel dashboard-card">
               <h2 className="card-title">
                 <Settings size={20} className="glow-text-secondary" />
-                AI Agent Portfolio Config
+                Portfolio Allocation Strategy
               </h2>
               
               <div className="strategy-selectors" style={{ marginTop: "20px" }}>
                 <div 
                   className={`strategy-option ${selectedRisk === "conservative" ? "selected" : ""}`}
-                  onClick={() => !isScanning && !loading && setSelectedRisk("conservative")}
+                  onClick={() => !loading && setSelectedRisk("conservative")}
                 >
                   <div className="strategy-info">
                     <span className="strategy-name">Conservative Mode</span>
@@ -1316,7 +1141,7 @@ export default function App() {
 
                 <div 
                   className={`strategy-option ${selectedRisk === "balanced" ? "selected" : ""}`}
-                  onClick={() => !isScanning && !loading && setSelectedRisk("balanced")}
+                  onClick={() => !loading && setSelectedRisk("balanced")}
                 >
                   <div className="strategy-info">
                     <span className="strategy-name">Balanced Portfolio</span>
@@ -1327,7 +1152,7 @@ export default function App() {
 
                 <div 
                   className={`strategy-option ${selectedRisk === "aggressive" ? "selected" : ""}`}
-                  onClick={() => !isScanning && !loading && setSelectedRisk("aggressive")}
+                  onClick={() => !loading && setSelectedRisk("aggressive")}
                 >
                   <div className="strategy-info">
                     <span className="strategy-name">Aggressive Yield</span>
@@ -1339,17 +1164,27 @@ export default function App() {
 
               {pendingRebalance && (
                 <div style={{ marginTop: "20px" }}>
-                  <button 
-                    className="action-btn pulse-primary" 
-                    style={{ background: "linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)", border: "none" }}
-                    onClick={executeRebalance}
-                    disabled={loading}
-                  >
-                    {loading ? "Updating On-chain..." : "Apply AI Rebalance"}
-                  </button>
-                  <p style={{ fontSize: "0.75rem", color: "#fcd34d", marginTop: "8px", textAlign: "center" }}>
-                    * On-chain capital weights adjustment is queued and awaits wallet approval.
-                  </p>
+                  {isOwner ? (
+                    <div>
+                      <button 
+                        className="action-btn deposit-btn" 
+                        style={{ background: "linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%)", border: "none" }}
+                        onClick={executeRebalance}
+                        disabled={loading}
+                      >
+                        {loading ? "Confirming on-chain..." : "Apply Rebalance Transaction"}
+                      </button>
+                      <p style={{ fontSize: "0.75rem", color: "#fcd34d", marginTop: "8px", textAlign: "center" }}>
+                        * You are the Owner. Adjusting these weights triggers a real contract transaction.
+                      </p>
+                    </div>
+                  ) : (
+                    <div style={{ padding: "12px", background: "rgba(255,255,255,0.02)", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.05)", textAlign: "center" }}>
+                      <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                        Allocation weights are out of alignment. (Only the owner contract deployer wallet can rebalance on-chain).
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1379,16 +1214,13 @@ export default function App() {
                         <span>Current: {asset.weight}% → Target: {targetWeight}%</span>
                       </div>
                       
-                      {/* Bar comparative */}
                       <div className="dual-progress-bar">
-                        {/* Current bar */}
                         <div className="prog-bar-container">
                           <span className="lbl">Current</span>
                           <div className="bar-bg">
                             <div className="bar-fill" style={{ width: `${asset.weight}%`, background: asset.color }}></div>
                           </div>
                         </div>
-                        {/* Target bar */}
                         <div className="prog-bar-container">
                           <span className="lbl">Target</span>
                           <div className="bar-bg dash-border">
@@ -1401,40 +1233,6 @@ export default function App() {
                 })}
               </div>
             </div>
-          </div>
-
-          {/* AI Logs Terminal (Full Screen Width) */}
-          <div className="glass-panel terminal-card" style={{ marginTop: "24px" }}>
-            <div className="terminal-header-bar">
-              <div className="terminal-dots">
-                <span className="terminal-dot" style={{ backgroundColor: "#ef4444" }}></span>
-                <span className="terminal-dot" style={{ backgroundColor: "#f59e0b" }}></span>
-                <span className="terminal-dot" style={{ backgroundColor: "#10b981" }}></span>
-              </div>
-              <span className="terminal-title-text">ai-agent@bary-vault: ~ (Strategy Core)</span>
-              <Activity size={14} className="logo-icon" />
-            </div>
-            
-            <div className="terminal-screen" style={{ height: "300px" }}>
-              {terminalLogs.map((log, index) => (
-                <div className={`terminal-line ${log.type}`} key={index}>
-                  <span className="terminal-time" style={{ color: "#475569", marginRight: "8px" }}>[{log.time}]</span>
-                  {log.text}
-                </div>
-              ))}
-              {isScanning && (
-                <div className="terminal-line scan">
-                  <span className="terminal-time" style={{ color: "#475569", marginRight: "8px" }}>[Scanning]</span>
-                  Scanning network rates... [▉▉▉▉▉▉▉▉       ] 50%
-                </div>
-              )}
-              <div ref={terminalEndRef}></div>
-            </div>
-
-            <button className="scan-btn" onClick={triggerAIScan} disabled={isScanning || loading}>
-              <RefreshCw size={16} className={isScanning ? "animate-spin" : ""} />
-              Trigger AI Yield Scan
-            </button>
           </div>
         </div>
       )}
@@ -1452,7 +1250,7 @@ export default function App() {
               
               <div style={{ marginTop: "20px" }}>
                 <p style={{ fontSize: "0.95rem", color: "#cbd5e1", marginBottom: "20px" }}>
-                  To test deposits and share redemptions in our Yield Fund smart contract on-chain, request free mock USDT (mUSDT) from our faucet.
+                  To test deposits and redemptions in our Yield Fund contract, claim mock USDT (mUSDT) tokens directly to your wallet.
                 </p>
 
                 <div className="faucet-display-info" style={{ background: "rgba(255,255,255,0.02)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)", marginBottom: "20px" }}>
@@ -1466,14 +1264,20 @@ export default function App() {
                   </div>
                 </div>
 
-                <button 
-                  className="action-btn deposit-btn" 
-                  style={{ background: "linear-gradient(135deg, #10b981 0%, #059669 100%)", border: "none" }}
-                  onClick={claimFaucet} 
-                  disabled={loading}
-                >
-                  {loading ? "Claiming..." : "Claim 1,000 mUSDT Faucet Tokens"}
-                </button>
+                {!isConnected ? (
+                  <button className="action-btn deposit-btn" onClick={connectWallet} disabled={loading}>
+                    Connect Wallet to Claim Faucet
+                  </button>
+                ) : (
+                  <button 
+                    className="action-btn deposit-btn" 
+                    style={{ background: "linear-gradient(135deg, #10b981 0%, #059669 100%)", border: "none" }}
+                    onClick={claimFaucet} 
+                    disabled={loading}
+                  >
+                    {loading ? "Claiming..." : "Claim 1,000 mUSDT Faucet Tokens"}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1485,7 +1289,7 @@ export default function App() {
               </h2>
               
               <div style={{ marginTop: "20px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "0.85rem" }}>
-                <p style={{ color: "#cbd5e1", marginBottom: "8px" }}>Configure MetaMask manually if the app is unable to trigger it auto-switch:</p>
+                <p style={{ color: "#cbd5e1", marginBottom: "8px" }}>Configure MetaMask manually if the app is unable to switch automatically:</p>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
                   <span style={{ color: "#94a3b8" }}>Network Name</span>
                   <span style={{ fontWeight: 600, color: "#ffffff" }}>Bohr Testnet</span>
@@ -1521,7 +1325,7 @@ export default function App() {
               <div>
                 <h4 style={{ color: "#ffffff", marginBottom: "10px", fontSize: "1.05rem" }}>AIBasketFund Contract</h4>
                 <p style={{ fontSize: "0.85rem", color: "#94a3b8", lineHeight: "1.6" }}>
-                  The yield basket smart contract. It handles USDT collateral deposits, mints BARY vault shares, and distributes fractional yields. Rebalancing acts are submitted by verified AI executor nodes using parameters optimized off-chain.
+                  The yield basket smart contract. It handles USDT collateral deposits, mints BARY vault shares, and distributes fractional yields on-chain.
                 </p>
                 <div style={{ marginTop: "12px", background: "rgba(0,0,0,0.2)", padding: "10px", borderRadius: "8px", fontSize: "0.8rem", fontFamily: "monospace" }}>
                   Address: {DEPLOYED_ADDRESSES.AIBasketFund}
@@ -1554,4 +1358,3 @@ export default function App() {
     </div>
   );
 }
-
