@@ -300,6 +300,40 @@ export default function App() {
     }
   };
 
+  // Approve USDT on-chain
+  const handleApprove = async () => {
+    if (!depositAmount || parseFloat(depositAmount) <= 0) return;
+
+    try {
+      setLoading(true);
+      setErrorMsg(null);
+      const signer = signerRef.current;
+      if (!signer) return;
+
+      const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, signer);
+      const amtRaw = ethers.parseUnits(depositAmount, 6);
+
+      const appTx = await usdtContract.approve(DEPLOYED_ADDRESSES.AIBasketFund, amtRaw, gasOverride);
+      
+      // Optimistically update allowance so the UI switches to "Deposit" button immediately
+      setUsdtAllowance(depositAmount);
+
+      await appTx.wait();
+
+      if (account && providerRef.current) {
+        await loadUserBalances(account, providerRef.current);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.reason || err.message || "Approval transaction failed");
+      if (account && providerRef.current) {
+        await loadUserBalances(account, providerRef.current);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Deposit USDT on-chain
   const handleDeposit = async () => {
     if (!depositAmount || parseFloat(depositAmount) <= 0) return;
@@ -311,22 +345,23 @@ export default function App() {
       const signer = signerRef.current;
       if (!signer) return;
 
-      const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, signer);
       const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, signer);
-
       const amtRaw = ethers.parseUnits(depositAmount, 6);
 
-      // Approve if allowance is low
-      const allowance = parseFloat(usdtAllowance);
-      if (allowance < amt) {
-        const appTx = await usdtContract.approve(DEPLOYED_ADDRESSES.AIBasketFund, ethers.parseUnits("1000000", 6), gasOverride);
-        await appTx.wait();
-      }
-
       const tx = await fundContract.deposit(amtRaw, gasOverride);
+
+      // OPTIMISTIC UPDATE: Deduct balance in real-time as soon as the user approves/signs in MetaMask
+      const currentUsdt = parseFloat(usdtBalance) - amt;
+      const rate = parseFloat(exchangeRate) || 1.0;
+      const estimatedShares = amt / rate;
+      const currentShares = parseFloat(shareBalance) + estimatedShares;
+
+      setUsdtBalance(currentUsdt.toFixed(2));
+      setShareBalance(currentShares.toFixed(2));
+      setDepositAmount("");
+
       await tx.wait();
 
-      setDepositAmount("");
       if (account && providerRef.current) {
         await loadUserBalances(account, providerRef.current);
         await loadGlobalMetrics();
@@ -334,6 +369,9 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.reason || err.message || "Deposit transaction failed");
+      if (account && providerRef.current) {
+        await loadUserBalances(account, providerRef.current);
+      }
     } finally {
       setLoading(false);
     }
@@ -342,6 +380,7 @@ export default function App() {
   // Withdraw / Redeem Shares on-chain
   const handleWithdraw = async () => {
     if (!withdrawAmount || parseFloat(withdrawAmount) <= 0) return;
+    const amt = parseFloat(withdrawAmount);
 
     try {
       setLoading(true);
@@ -353,9 +392,19 @@ export default function App() {
       const amtRaw = ethers.parseEther(withdrawAmount);
 
       const tx = await fundContract.redeem(amtRaw, gasOverride);
+
+      // OPTIMISTIC UPDATE: Deduct share balance in real-time as soon as user approves/signs in MetaMask
+      const rate = parseFloat(exchangeRate) || 1.0;
+      const returnedUsdt = amt * rate;
+      const currentShares = parseFloat(shareBalance) - amt;
+      const currentUsdt = parseFloat(usdtBalance) + returnedUsdt;
+
+      setShareBalance(currentShares.toFixed(2));
+      setUsdtBalance(currentUsdt.toFixed(2));
+      setWithdrawAmount("");
+
       await tx.wait();
 
-      setWithdrawAmount("");
       if (account && providerRef.current) {
         await loadUserBalances(account, providerRef.current);
         await loadGlobalMetrics();
@@ -363,6 +412,9 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.reason || err.message || "Withdrawal failed");
+      if (account && providerRef.current) {
+        await loadUserBalances(account, providerRef.current);
+      }
     } finally {
       setLoading(false);
     }
@@ -858,13 +910,24 @@ export default function App() {
                     </div>
                   </div>
 
-                  <button 
-                    className="action-btn deposit-btn" 
-                    onClick={handleDeposit} 
-                    disabled={loading || !depositAmount || parseFloat(depositAmount) <= 0}
-                  >
-                    {loading ? "Confirming..." : "Deposit & Mint Share"}
-                  </button>
+                  {parseFloat(usdtAllowance) < (parseFloat(depositAmount) || 0) ? (
+                    <button 
+                      className="action-btn deposit-btn" 
+                      onClick={handleApprove} 
+                      disabled={loading || !depositAmount || parseFloat(depositAmount) <= 0}
+                      style={{ background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)", border: "none" }}
+                    >
+                      {loading ? "Approving..." : "Approve USDT"}
+                    </button>
+                  ) : (
+                    <button 
+                      className="action-btn deposit-btn" 
+                      onClick={handleDeposit} 
+                      disabled={loading || !depositAmount || parseFloat(depositAmount) <= 0}
+                    >
+                      {loading ? "Confirming..." : "Deposit & Mint Share"}
+                    </button>
+                  )}
                 </div>
 
                 {/* Withdrawal Card */}
