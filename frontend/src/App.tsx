@@ -25,7 +25,7 @@ import {
   MOCK_USDT_ABI, 
   AI_BASKET_FUND_ABI, 
   DEPLOYED_ADDRESSES, 
-  BOHR_TESTNET_PARAMS 
+  BOTCHAIN_MAINNET_PARAMS 
 } from "./contracts";
 import "./App.css";
 
@@ -245,19 +245,19 @@ export default function App() {
 
       // Verify and switch network if necessary
       const network = await provider.getNetwork();
-      const targetChainId = BigInt(BOHR_TESTNET_PARAMS.chainId);
+      const targetChainId = BigInt(BOTCHAIN_MAINNET_PARAMS.chainId);
       
       if (network.chainId !== targetChainId) {
         try {
           await ethereum.request({
             method: "wallet_switchEthereumChain",
-            params: [{ chainId: BOHR_TESTNET_PARAMS.chainId }],
+            params: [{ chainId: BOTCHAIN_MAINNET_PARAMS.chainId }],
           });
         } catch (switchError: any) {
           if (switchError.code === 4902) {
             await ethereum.request({
               method: "wallet_addEthereumChain",
-              params: [BOHR_TESTNET_PARAMS],
+              params: [BOTCHAIN_MAINNET_PARAMS],
             });
           } else {
             throw switchError;

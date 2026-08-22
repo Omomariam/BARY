@@ -9,21 +9,21 @@ The portfolio allocation weights can be rebalanced dynamically on-chain by the f
 
 ---
 
-## Deployed Contracts (Bohr Testnet)
+## Deployed Contracts (BOT Chain Mainnet)
 
-- **MockUSDT**: `0x98C2f01597618B6F519B28953D10589E8162773F`
-- **AIBasketFund (BARY Shares)**: `0x9C573bE6F44A1dd347a9F0c93d741d91509A0fb5`
+- **MockUSDT**: `0x499230690F80E0D9F6b08AeB150A514755bbef4E`
+- **AIBasketFund (BARY Shares)**: `0x98C2f01597618B6F519B28953D10589E8162773F`
 
 ---
 
-## Bohr Testnet Parameters
+## BOT Chain Mainnet Parameters
 
 Add manually to MetaMask if needed:
-- **Network Name**: Bohr Testnet
-- **RPC URL**: `https://rpc.bohr.life`
-- **Chain ID**: `7777` (Hex: `0x3c8`)
+- **Network Name**: BOT Chain
+- **RPC URL**: `https://rpc.botchain.ai`
+- **Chain ID**: `677` (Hex: `0x2a5`)
 - **Currency Symbol**: `BOT`
-- **Block Explorer**: [https://scan.bohr.life/](https://scan.bohr.life/)
+- **Block Explorer**: [https://scan.botchain.ai/](https://scan.botchain.ai/)
 
 ---
 

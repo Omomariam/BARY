@@ -23,20 +23,20 @@ export const AI_BASKET_FUND_ABI = [
   "event YieldAccrued(uint256 amount)"
 ];
 
-// Bohr Testnet deployed addresses (will be updated after running deploy.js)
+// BOT Chain Mainnet deployed addresses (deployed via deploy_mainnet.js)
 export const DEPLOYED_ADDRESSES = {
-  MockUSDT: "0x98C2f01597618B6F519B28953D10589E8162773F",
-  AIBasketFund: "0x9C573bE6F44A1dd347a9F0c93d741d91509A0fb5"
+  MockUSDT: "0x499230690F80E0D9F6b08AeB150A514755bbef4E",
+  AIBasketFund: "0x98C2f01597618B6F519B28953D10589E8162773F"
 };
 
-export const BOHR_TESTNET_PARAMS = {
-  chainId: "0x3c8", // 968 in hex
-  chainName: "Bohr Testnet",
+export const BOTCHAIN_MAINNET_PARAMS = {
+  chainId: "0x2a5", // 677 in hex
+  chainName: "BOT Chain",
   nativeCurrency: {
-    name: "Bohr BOT",
+    name: "BOT Token",
     symbol: "BOT",
     decimals: 18
   },
-  rpcUrls: ["https://rpc.bohr.life"],
-  blockExplorerUrls: ["https://scan.bohr.life/"]
+  rpcUrls: ["https://rpc.botchain.ai"],
+  blockExplorerUrls: ["https://scan.botchain.ai/"]
 };

@@ -8,6 +8,8 @@ yarn-error.log*
 # Dependency directories
 node_modules/
 generate_txs.js
+check_botchain_balance.js
+check_balance.js
 # Hardhat compiler outputs
 artifacts/
 cache/

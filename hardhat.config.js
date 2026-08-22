@@ -17,6 +17,12 @@ export default defineConfig({
       url: "https://rpc.bohr.life",
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
       chainId: 968
+    },
+    botchainMainnet: {
+      type: "http",
+      url: "https://rpc.botchain.ai",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 677
     }
   }
 });
