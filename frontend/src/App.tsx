@@ -565,7 +565,7 @@ export default function App() {
           {currentPage !== "landing" && (
             <div className="network-badge">
               <span className="badge-dot"></span>
-              <span>Bohr Testnet</span>
+              <span>BOT Chain Mainnet</span>
             </div>
           )}
 
@@ -617,14 +617,14 @@ export default function App() {
               Maximize Stablecoin Yields via <span className="highlight-text">Autonomous RWA</span> Pools
             </h2>
             <p className="hero-subtitle">
-              BARY is a non-custodial decentralized yield basket that aggregates real-world asset collateral (US Treasury Bills, DePIN high-compute leasing, and Real Estate Debt) dynamically balanced on-chain on the Bohr network.
+              BARY is a non-custodial decentralized yield basket that aggregates real-world asset collateral (US Treasury Bills, DePIN high-compute leasing, and Real Estate Debt) dynamically balanced on-chain on the BOT Chain mainnet.
             </p>
             <div className="hero-ctas">
               <button className="cta-primary-btn" onClick={() => setCurrentPage("dashboard")}>
                 Launch Yield Vault <ArrowRight size={18} />
               </button>
               <button className="cta-secondary-btn" onClick={() => setCurrentPage("faucet")}>
-                Bohr Testnet Guide
+                BOT Chain Mainnet Guide
               </button>
             </div>
           </section>
@@ -645,7 +645,7 @@ export default function App() {
             </div>
             <div className="glass-panel metric-box">
               <span className="metric-num glow-text-success">1s Blocks</span>
-              <span className="metric-lbl">Bohr Chain Performance</span>
+              <span className="metric-lbl">BOT Chain Performance</span>
             </div>
           </section>
 
@@ -786,7 +786,7 @@ export default function App() {
               <div className="step-card">
                 <div className="step-num">1</div>
                 <h5>Deposit USDT</h5>
-                <p>Deposit stablecoins on Bohr Testnet. Your capital is safe, locked in our yield-accruing vault smart contract.</p>
+                <p>Deposit stablecoins on BOT Chain Mainnet. Your capital is safe, locked in our yield-accruing vault smart contract.</p>
               </div>
               <div className="step-card">
                 <div className="step-num">2</div>
@@ -857,7 +857,7 @@ export default function App() {
             <div className="glass-panel connect-wallet-prompt">
               <Wallet size={48} className="prompt-icon" />
               <h3>Connect Your Wallet</h3>
-              <p>Please connect your MetaMask wallet on Bohr Testnet to mint shares, deposit USDT collateral, and view balances.</p>
+              <p>Please connect your MetaMask wallet on BOT Chain Mainnet to mint shares, deposit USDT collateral, and view balances.</p>
               <button className="cta-primary-btn" onClick={connectWallet} disabled={loading}>
                 {loading ? "Connecting..." : "Connect Wallet"}
               </button>
@@ -1072,7 +1072,7 @@ export default function App() {
             <div className="glass-panel connect-wallet-prompt">
               <Wallet size={48} className="prompt-icon" />
               <h3>Connect Your Wallet</h3>
-              <p>Please connect your MetaMask wallet on Bohr Testnet to query on-chain transactions and projected earnings.</p>
+              <p>Please connect your MetaMask wallet on BOT Chain Mainnet to query on-chain transactions and projected earnings.</p>
               <button className="cta-primary-btn" onClick={connectWallet} disabled={loading}>
                 Connect Wallet
               </button>
@@ -1363,7 +1363,7 @@ export default function App() {
             <div className="glass-panel dashboard-card">
               <h2 className="card-title">
                 <Plus size={20} className="glow-text-success" />
-                Bohr Testnet mUSDT Faucet
+                BOT Chain mUSDT Faucet
               </h2>
               
               <div style={{ marginTop: "20px" }}>
@@ -1399,11 +1399,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* Bohr connection parameters */}
+            {/* BOT Chain connection parameters */}
             <div className="glass-panel dashboard-card">
               <h2 className="card-title">
                 <Info size={20} className="glow-text-primary" />
-                Bohr Network Parameters
+                BOT Chain Network Parameters
               </h2>
               
               <div style={{ marginTop: "20px", display: "flex", flexDirection: "column", gap: "12px", fontSize: "0.85rem" }}>
@@ -1466,7 +1466,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="app-footer">
-        <p>&copy; 2026 Bohr AI-RWA Yield Fund (BARY). Built for BOT Chain Builder Challenge #2.</p>
+        <p>&copy; 2026 BOT Chain AI-RWA Yield Fund (BARY). Built for BOT Chain Builder Challenge #2.</p>
         <div className="footer-links">
           <a href="https://scan.botchain.ai" className="footer-link" target="_blank" rel="noreferrer">Block Explorer</a>
           <a href="https://faucet.botchain.ai" className="footer-link" target="_blank" rel="noreferrer">Faucet</a>
