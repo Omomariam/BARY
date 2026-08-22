@@ -95,7 +95,7 @@ export default function App() {
   // 1. Fetch Global Metrics on Mount & Periodically via Read-Only RPC Provider
   const loadGlobalMetrics = async () => {
     try {
-      const provider = new ethers.JsonRpcProvider("https://rpc.bohr.life");
+      const provider = new ethers.JsonRpcProvider("https://rpc.botchain.ai");
       const fundContract = new ethers.Contract(DEPLOYED_ADDRESSES.AIBasketFund, AI_BASKET_FUND_ABI, provider);
       const usdtContract = new ethers.Contract(DEPLOYED_ADDRESSES.MockUSDT, MOCK_USDT_ABI, provider);
 
@@ -222,6 +222,38 @@ export default function App() {
     }, 4000);
     return () => clearInterval(interval);
   }, [isConnected, account]);
+
+  // Listen for account/network changes
+  useEffect(() => {
+    const { ethereum } = window as any;
+    if (ethereum && ethereum.on) {
+      const handleChainChanged = () => {
+        window.location.reload();
+      };
+      const handleAccountsChanged = (accounts: string[]) => {
+        if (accounts.length === 0) {
+          disconnectWallet();
+        } else {
+          setAccount(accounts[0]);
+          if (providerRef.current) {
+            providerRef.current.getSigner().then(s => {
+              signerRef.current = s;
+            }).catch(console.error);
+          }
+        }
+      };
+
+      ethereum.on("chainChanged", handleChainChanged);
+      ethereum.on("accountsChanged", handleAccountsChanged);
+
+      return () => {
+        if (ethereum.removeListener) {
+          ethereum.removeListener("chainChanged", handleChainChanged);
+          ethereum.removeListener("accountsChanged", handleAccountsChanged);
+        }
+      };
+    }
+  }, []);
 
   // Connect Wallet logic
   const connectWallet = async () => {
@@ -1179,7 +1211,7 @@ export default function App() {
                             <td style={{ color: "#94a3b8" }}>{tx.time}</td>
                             <td>
                               <a 
-                                href={`https://scan.bohr.life/tx/0x${tx.hash.replace("...", "")}`} 
+                                href={`https://scan.botchain.ai/tx/0x${tx.hash.replace("...", "")}`} 
                                 target="_blank" 
                                 rel="noreferrer" 
                                 style={{ fontFamily: "monospace", color: "#6366f1", textDecoration: "none" }}
@@ -1378,23 +1410,23 @@ export default function App() {
                 <p style={{ color: "#cbd5e1", marginBottom: "8px" }}>Configure MetaMask manually if the app is unable to switch automatically:</p>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
                   <span style={{ color: "#94a3b8" }}>Network Name</span>
-                  <span style={{ fontWeight: 600, color: "#ffffff" }}>Bohr Testnet</span>
+                  <span style={{ fontWeight: 600, color: "#ffffff" }}>BOT Chain</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
                   <span style={{ color: "#94a3b8" }}>New RPC URL</span>
-                  <span style={{ fontFamily: "monospace", color: "#6366f1" }}>https://rpc.bohr.life</span>
+                  <span style={{ fontFamily: "monospace", color: "#6366f1" }}>https://rpc.botchain.ai</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
                   <span style={{ color: "#94a3b8" }}>Chain ID</span>
-                  <span style={{ color: "#ffffff" }}>7777</span>
+                  <span style={{ color: "#ffffff" }}>677</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid rgba(255,255,255,0.02)" }}>
                   <span style={{ color: "#94a3b8" }}>Currency Symbol</span>
-                  <span style={{ color: "#ffffff" }}>BOHR</span>
+                  <span style={{ color: "#ffffff" }}>BOT</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0" }}>
                   <span style={{ color: "#94a3b8" }}>Block Explorer</span>
-                  <a href="https://scan.bohr.life" target="_blank" rel="noreferrer" style={{ color: "#14b8a6", textDecoration: "none" }}>https://scan.bohr.life</a>
+                  <a href="https://scan.botchain.ai" target="_blank" rel="noreferrer" style={{ color: "#14b8a6", textDecoration: "none" }}>https://scan.botchain.ai</a>
                 </div>
               </div>
             </div>
@@ -1436,7 +1468,7 @@ export default function App() {
       <footer className="app-footer">
         <p>&copy; 2026 Bohr AI-RWA Yield Fund (BARY). Built for BOT Chain Builder Challenge #2.</p>
         <div className="footer-links">
-          <a href="https://scan.bohr.life" className="footer-link" target="_blank" rel="noreferrer">Block Explorer</a>
+          <a href="https://scan.botchain.ai" className="footer-link" target="_blank" rel="noreferrer">Block Explorer</a>
           <a href="https://faucet.botchain.ai" className="footer-link" target="_blank" rel="noreferrer">Faucet</a>
           <a href="https://dev-docs.botchain.ai" className="footer-link" target="_blank" rel="noreferrer">Developer Docs</a>
         </div>
